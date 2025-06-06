@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { collection, addDoc } from 'firebase/firestore'
+import emailjs from '@emailjs/browser';
+import { collection, addDoc, Timestamp } from 'firebase/firestore'
 import db from './firebase'
 import GoogleMapsWrapper from './components/GoogleMapsWrapper'
 import LocationSelector from './components/LocationSelector.jsx'
@@ -72,15 +73,25 @@ function App() {
   }
 
   const handlers = useSwipeable({
-    onSwipedLeft: () => console.log('swipe left'),
-    onSwipedRight: () => console.log('swipe right'),
+    onSwipedLeft: () => {
+      if (step < 5) setStep((prev) => prev + 1)
+    },
+    onSwipedRight: () => {
+      if (step > 0) setStep((prev) => prev - 1)
+    },
     preventScrollOnSwipe: true,
     trackMouse: true,
   })
 
-  // Step 5: Form submission handler (save to Firestore)
+  // Step 5: Form submission handler (save to Firestore and send email)
   const handleSubmit = async () => {
     const form = document.querySelector('form')
+
+    // Form validation: ensure all required fields are filled
+    if (!form.name.value || !form.phone.value || !form.email.value || !selected || !selectedDate || !selectedTime || !vehicleType) {
+      alert('Please fill out all required fields.')
+      return
+    }
 
     const payload = {
       name: form.name.value,
@@ -92,8 +103,9 @@ function App() {
       serviceLocation: serviceLocation?.address || '',
       vehicleType,
       servicePackage: selected,
-      date: selectedDate ? selectedDate.toLocaleDateString() : '',
-      time: selectedTime
+      date: selectedDate ? Timestamp.fromDate(new Date(selectedDate)) : null,
+      time: selectedTime,
+      reminderSent: false
     }
 
     console.log('Submitting booking to Firestore...')
@@ -101,8 +113,54 @@ function App() {
 
     try {
       await addDoc(collection(db, 'bookings'), payload)
+      // Send booking to Google Sheets for Zapier
+          fetch('https://api.sheetbest.com/sheets/0aa3d148-7a03-4628-a8ac-b23b792e0558', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              name: form.name.value,
+              email: form.email.value,
+              phone: form.phone.value,
+              service: selected,
+              vehicleType,
+              date: selectedDate && selectedTime
+                ? new Date(`${selectedDate.toLocaleDateString()} ${selectedTime} US/Central`).toISOString()
+                : '',
+              time: selectedTime,
+              reminderSent: false,
+              sendReminders: form.sendReminders.checked
+            })
+          })
+      .then(res => res.json())
+      .then(data => console.log('Logged to Google Sheets:', data))
+      .catch(err => console.error('Google Sheets error:', err))
+      // Send confirmation email using EmailJS
+      emailjs.send(
+        'service_3u7p87n',
+        'template_halximq',
+        {
+          name: form.name.value,
+          email: form.email.value,
+          phone: form.phone.value,
+          service: selected,
+          date: selectedDate ? selectedDate.toLocaleDateString() : '',
+          time: selectedTime,
+          location: serviceLocation?.address || '',
+          notes: form.notes.value,
+        },
+        'zqS2FfLzhs2nOcJMs'
+      ).then(
+        (response) => {
+          console.log('Email sent successfully:', response.status, response.text);
+        },
+        (error) => {
+          console.error('Email send failed:', error);
+        }
+      );
       setFormSubmitted(true)
-      setStep(6)
+      setStep(5)
     } catch (err) {
       console.error('Error saving to Firestore:', err)
     }
@@ -112,58 +170,177 @@ function App() {
     <main className={`${darkMode ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-800'} min-h-screen flex flex-col items-center justify-center p-4 transition-colors duration-300`}>
       <header className="w-full max-w-md mb-4 flex justify-between items-center">
         <div className="text-sm text-gray-500 dark:text-gray-400">
-          {step > 0 ? `Step ${step} of 5` : 'Location'}
+          {step < 5 ? `Step ${step + 1} of 5` : 'Confirmation'}
         </div>
         <button onClick={() => setDarkMode(!darkMode)} className="text-sm px-3 py-1 border rounded">
           {darkMode ? 'Light Mode' : 'Dark Mode'}
         </button>
       </header>
 
-      {/* Step 0 replaced with step 4 GoogleMapsWrapper */}
-      {step === 0 && (
-        <GoogleMapsWrapper>
-          <motion.div
-            className="fade-step w-full max-w-md text-center"
-            key="step0"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <h1 className="text-3xl font-bold mb-6">📍 Choose Your Location</h1>
-            <LocationSelector onConfirm={({ position, address }) => {
-              setServiceLocation({ position, address })
-              setStep(1)
-            }} />
-          </motion.div>
-        </GoogleMapsWrapper>
-      )}
-
-      {step === 1 && (
-        <motion.div
-          className="fade-step w-full max-w-xl mx-auto text-center p-6"
-          key="step1"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-        >
-          <h1 className="text-2xl font-bold mb-6">🏪 Select Your Service Location</h1>
+      <div className="w-full max-w-md mb-6">
+        <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400 mb-1">
+          {['Service', 'Date', 'Vehicle Info', 'Location', 'Contact'].map((label, i) => (
+            <span key={label} className={i === step ? 'font-bold text-blue-600' : ''}>
+              {label}
+            </span>
+          ))}
+        </div>
+        <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
           <div
-            onClick={() => setStep(2)}
-            className="cursor-pointer border border-blue-500 rounded-lg p-4 shadow-md text-left hover:bg-blue-50 transition-all"
-          >
-            <p className="text-lg font-semibold text-blue-600">Detail-ly Auto Detailing</p>
-            <p className="text-sm text-gray-600">710 S. 10th Ave, Wausau, WI</p>
+            className="h-full bg-blue-600 transition-all duration-300"
+            style={{ width: `${((step + 1) / 6) * 100}%` }}
+          />
+        </div>
+      </div>
+
+      {/* Step 0: Service selection */}
+      {step === 0 && (
+        <motion.div
+          className="fade-step w-full max-w-6xl mx-auto text-center p-6"
+          key="step0"
+          initial={{ opacity: 0, y: 50 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -30 }}
+          transition={{ duration: 0.5, ease: 'easeInOut' }}
+        >
+          <h1 className="text-3xl font-bold mb-6">🚗 Pick Your Detailing Package</h1>
+          <p className="mb-2 text-center text-gray-500">Vehicle Type: <strong>{vehicleType || 'Select below'}</strong></p>
+          <p className="mb-8 text-center text-gray-600 italic">* Prices update based on your vehicle type</p>
+
+          <div {...handlers} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+            {services.map(({ anim, label, description }) => {
+              const price = pricing[vehicleType]?.[label]
+              return (
+                <div
+                  key={label}
+                  className={`cursor-pointer p-4 rounded-xl border transition-colors duration-200 shadow-sm hover:shadow-md ${
+                    selected === label
+                      ? 'border-blue-600 bg-blue-50'
+                      : 'border-gray-300 bg-white'
+                  }`}
+                  onClick={() => handleSelect(label)}
+                >
+                  <Lottie animationData={anim} className="h-24 mx-auto" loop autoplay />
+                  <h2 className="text-lg font-semibold mt-4">{label}</h2>
+                  <p className="text-sm text-gray-500 mt-2">{description}</p>
+                  <p className="text-md font-semibold mt-4">
+                    {label === 'Ceramic Coating' ? 'Call for pricing' : (price ? `$${price?.toFixed(2)}` : '')}
+                  </p>
+                  <button
+                    className="text-sm text-blue-600 underline mt-2"
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setExpandedCard(expandedCard === label ? null : label)
+                    }}
+                  >
+                    {expandedCard === label ? 'Hide details' : 'More details'}
+                  </button>
+                  {expandedCard === label && (
+                    <pre className="text-sm text-left text-gray-600 whitespace-pre-wrap mt-4">
+                      {serviceDescriptions[label]}
+                    </pre>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+
+          <div className="flex justify-between items-center">
+            <div />
+            <button
+              disabled={!selected}
+              onClick={() => setStep(1)}
+              className={`px-6 py-2 rounded-full transition-all ${
+                selected
+                  ? 'bg-blue-600 text-white hover:bg-blue-700'
+                  : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+              }`}
+            >
+              Next →
+            </button>
           </div>
         </motion.div>
       )}
 
+      {/* Step 1: Date selection */}
+      {step === 1 && (
+        <motion.div
+          className="fade-step w-full max-w-md text-center"
+          key="step1"
+          initial={{ opacity: 0, y: 50 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -30 }}
+          transition={{ duration: 0.5, ease: 'easeInOut' }}
+        >
+          <h1 className="text-3xl font-bold mb-6">📅 Select Date & Time</h1>
+
+          <div className="mb-6">
+            <DayPicker
+              mode="single"
+              selected={selectedDate}
+              onSelect={setSelectedDate}
+              fromDate={new Date()}
+              className="mx-auto"
+            />
+          </div>
+
+          {selectedDate && (
+            <>
+              <h2 className="text-md font-semibold mb-2">Select a Time</h2>
+              <div className="grid grid-cols-3 gap-2 mb-6">
+                {[
+                  '7:00 AM', '8:00 AM', '9:00 AM', '10:00 AM', '11:00 AM',
+                  '12:00 PM', '1:00 PM', '2:00 PM', '3:00 PM', '4:00 PM',
+                  '5:00 PM', '6:00 PM', '7:00 PM'
+                ].map((time) => (
+                  <button
+                    key={time}
+                    className={`py-2 px-3 rounded-md border text-sm ${
+                      selectedTime === time
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-100'
+                    }`}
+                    onClick={() => setSelectedTime(time)}
+                  >
+                    {time}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          <div className="flex justify-between">
+            <button
+              onClick={() => setStep(0)}
+              className="px-6 py-2 bg-gray-300 text-gray-800 rounded-full hover:bg-gray-400 transition-all"
+            >
+              ← Back
+            </button>
+            <button
+              disabled={!selectedDate || !selectedTime}
+              onClick={() => setStep(2)}
+              className={`px-6 py-2 rounded-full transition-all ${
+                selectedDate && selectedTime
+                  ? 'bg-blue-600 text-white hover:bg-blue-700'
+                  : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+              }`}
+            >
+              Next →
+            </button>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Step 2: Vehicle Info */}
       {step === 2 && (
         <motion.div
           className="fade-step w-full max-w-xl mx-auto text-center p-6"
           key="step2"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
+          initial={{ opacity: 0, y: 50 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -30 }}
+          transition={{ duration: 0.5, ease: 'easeInOut' }}
         >
           <h1 className="text-2xl font-bold mb-6">🚙 What type of vehicle do you have?</h1>
 
@@ -205,157 +382,45 @@ function App() {
         </motion.div>
       )}
 
+      {/* Step 3: Location */}
       {step === 3 && (
-        <motion.div
-          className="fade-step w-full max-w-6xl mx-auto text-center p-6"
-          key="step3"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-        >
-          <h1 className="text-3xl font-bold mb-6">🚗 Pick Your Detailing Package</h1>
-          <p className="mb-2 text-center text-gray-500">Vehicle Type: <strong>{vehicleType}</strong></p>
-          <p className="mb-8 text-center text-gray-600 italic">* Prices update based on your vehicle type</p>
-
-          <div {...handlers} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-            {services.map(({ anim, label, description }) => {
-              const price = pricing[vehicleType]?.[label]
-              return (
-                <div
-                  key={label}
-                  className={`cursor-pointer p-4 rounded-xl border transition-colors duration-200 shadow-sm hover:shadow-md ${
-                    selected === label
-                      ? 'border-blue-600 bg-blue-50'
-                      : 'border-gray-300 bg-white'
-                  }`}
-                  onClick={() => handleSelect(label)}
-                >
-                  <Lottie animationData={anim} className="h-24 mx-auto" loop autoplay />
-                  <h2 className="text-lg font-semibold mt-4">{label}</h2>
-                  <p className="text-sm text-gray-500 mt-2">{description}</p>
-                  <p className="text-md font-semibold mt-4">
-                    {label === 'Ceramic Coating' ? 'Call for pricing' : `$${price?.toFixed(2)}`}
-                  </p>
-                  <button
-                    className="text-sm text-blue-600 underline mt-2"
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setExpandedCard(expandedCard === label ? null : label)
-                    }}
-                  >
-                    {expandedCard === label ? 'Hide details' : 'More details'}
-                  </button>
-                  {expandedCard === label && (
-                    <pre className="text-sm text-left text-gray-600 whitespace-pre-wrap mt-4">
-                      {serviceDescriptions[label]}
-                    </pre>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-
-          <div className="flex justify-between items-center">
+        <GoogleMapsWrapper>
+          <motion.div
+            className="fade-step w-full max-w-md text-center"
+            key="step3"
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -30 }}
+            transition={{ duration: 0.5, ease: 'easeInOut' }}
+          >
+            <h1 className="text-3xl font-bold mb-6">📍 Choose Your Location</h1>
+            <LocationSelector onConfirm={({ position, address }) => {
+              setServiceLocation({ position, address })
+              setStep(4)
+            }} />
             <button
               onClick={() => setStep(2)}
-              className="px-6 py-2 bg-gray-300 text-gray-800 rounded-full hover:bg-gray-400 transition-all"
+              className="mt-6 px-6 py-2 bg-gray-300 text-gray-800 rounded-full hover:bg-gray-400 transition-all"
             >
               ← Back
             </button>
-            <button
-              disabled={!selected}
-              onClick={() => setStep(4)}
-              className={`px-6 py-2 rounded-full transition-all ${
-                selected
-                  ? 'bg-blue-600 text-white hover:bg-blue-700'
-                  : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-              }`}
-            >
-              Next →
-            </button>
-          </div>
-        </motion.div>
+          </motion.div>
+        </GoogleMapsWrapper>
       )}
 
+      {/* Step 4: Contact */}
       {step === 4 && (
         <motion.div
           className="fade-step w-full max-w-md text-center"
           key="step4"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-        >
-          <h1 className="text-3xl font-bold mb-6">📅 Select Date & Time</h1>
-
-          <div className="mb-6">
-            <DayPicker
-              mode="single"
-              selected={selectedDate}
-              onSelect={setSelectedDate}
-              fromDate={new Date()}
-              className="mx-auto"
-            />
-          </div>
-
-          {selectedDate && (
-            <>
-              <h2 className="text-md font-semibold mb-2">Select a Time</h2>
-              <div className="grid grid-cols-3 gap-2 mb-6">
-                {[
-                  '7:00 AM', '8:00 AM', '9:00 AM', '10:00 AM', '11:00 AM',
-                  '12:00 PM', '1:00 PM', '2:00 PM', '3:00 PM', '4:00 PM',
-                  '5:00 PM', '6:00 PM', '7:00 PM'
-                ].map((time) => (
-                  <button
-                    key={time}
-                    className={`py-2 px-3 rounded-md border text-sm ${
-                      selectedTime === time
-                        ? 'bg-blue-600 text-white border-blue-600'
-                        : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-100'
-                    }`}
-                    onClick={() => setSelectedTime(time)}
-                  >
-                    {time}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-
-          <div className="flex justify-between">
-            <button
-              onClick={() => setStep(3)}
-              className="px-6 py-2 bg-gray-300 text-gray-800 rounded-full hover:bg-gray-400 transition-all"
-            >
-              ← Back
-            </button>
-            <button
-              disabled={!selectedDate || !selectedTime}
-              onClick={() => setStep(5)}
-              className={`px-6 py-2 rounded-full transition-all ${
-                selectedDate && selectedTime
-                  ? 'bg-blue-600 text-white hover:bg-blue-700'
-                  : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-              }`}
-            >
-              Next →
-            </button>
-          </div>
-        </motion.div>
-      )}
-
-      {step === 5 && (
-        <motion.div
-          className="fade-step w-full max-w-md text-center"
-          key="step5"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
+          initial={{ opacity: 0, y: 50 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -30 }}
+          transition={{ duration: 0.5, ease: 'easeInOut' }}
         >
           <h1 className="text-3xl font-bold mb-6">📝 Contact & Booking Info</h1>
           <button
-            onClick={() => setStep(4)}
+            onClick={() => setStep(3)}
             className="mb-4 px-6 py-2 bg-gray-300 text-gray-800 rounded-full hover:bg-gray-400 transition-all"
           >
             ← Back
@@ -403,7 +468,6 @@ function App() {
             <input type="hidden" name="serviceLocation" value={serviceLocation?.address || ''} />
             <input type="hidden" name="vehicleType" value={vehicleType || ''} />
             <input type="hidden" name="servicePackage" value={selected || ''} />
-            <input type="hidden" name="date" value={selectedDate ? selectedDate.toLocaleDateString() : ''} />
             <input type="hidden" name="time" value={selectedTime || ''} />
             <button
               type="button"
@@ -416,13 +480,15 @@ function App() {
         </motion.div>
       )}
 
-      {step === 6 && (
+      {/* Step 5: Confirmation */}
+      {step === 5 && (
         <motion.div
           className="fade-step w-full max-w-md text-center"
-          key="step6"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
+          key="step5"
+          initial={{ opacity: 0, y: 50 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -30 }}
+          transition={{ duration: 0.5, ease: 'easeInOut' }}
         >
           <h1 className="text-3xl font-bold mb-4 text-green-600">🎉 Booking Confirmed!</h1>
           <p className="text-lg text-gray-700 mb-4">Thank you for booking with us. We've received your details and will reach out shortly!</p>
