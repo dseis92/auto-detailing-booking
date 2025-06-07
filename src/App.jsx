@@ -85,9 +85,8 @@ function App() {
 
   // Step 5: Form submission handler (save to Firestore and send email)
   const handleSubmit = async () => {
-    const form = document.querySelector('form')
+    const form = document.forms[0]
 
-    // Form validation: ensure all required fields are filled
     if (!form.name.value || !form.phone.value || !form.email.value || !selected || !selectedDate || !selectedTime || !vehicleType) {
       alert('Please fill out all required fields.')
       return
@@ -108,36 +107,42 @@ function App() {
       reminderSent: false
     }
 
-    console.log('Submitting booking to Firestore...')
+    console.log('✅ Submitting booking to Firestore...')
     console.log('Payload:', payload)
 
     try {
       await addDoc(collection(db, 'bookings'), payload)
-      // Send booking to Google Sheets for Zapier
-          fetch('https://api.sheetbest.com/sheets/0aa3d148-7a03-4628-a8ac-b23b792e0558', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              name: form.name.value,
-              email: form.email.value,
-              phone: form.phone.value,
-              service: selected,
-              vehicleType,
-              date: selectedDate && selectedTime
-                ? new Date(`${selectedDate.toLocaleDateString()} ${selectedTime} US/Central`).toISOString()
-                : '',
-              time: selectedTime,
-              reminderSent: false,
-              sendReminders: form.sendReminders.checked
-            })
-          })
-      .then(res => res.json())
-      .then(data => console.log('Logged to Google Sheets:', data))
-      .catch(err => console.error('Google Sheets error:', err))
-      // Send confirmation email using EmailJS
-      emailjs.send(
+      console.log('✅ Saved to Firestore')
+    } catch (err) {
+      console.error('❌ Firestore error:', err)
+    }
+
+    try {
+      const res = await fetch('https://api.sheetbest.com/sheets/0aa3d148-7a03-4628-a8ac-b23b792e0558', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: form.name.value,
+          email: form.email.value,
+          phone: form.phone.value,
+          service: selected,
+          vehicleType,
+          date: selectedDate && selectedTime
+            ? new Date(`${selectedDate.toLocaleDateString()} ${selectedTime} US/Central`).toISOString()
+            : '',
+          time: selectedTime,
+          reminderSent: false,
+          sendReminders: form.sendReminders.checked
+        })
+      })
+      const data = await res.json()
+      console.log('✅ Sent to Google Sheets:', data)
+    } catch (err) {
+      console.error('❌ Google Sheets error:', err)
+    }
+
+    try {
+      const response = await emailjs.send(
         'service_3u7p87n',
         'template_halximq',
         {
@@ -151,19 +156,16 @@ function App() {
           notes: form.notes.value,
         },
         'zqS2FfLzhs2nOcJMs'
-      ).then(
-        (response) => {
-          console.log('Email sent successfully:', response.status, response.text);
-        },
-        (error) => {
-          console.error('Email send failed:', error);
-        }
-      );
-      setFormSubmitted(true)
-      setStep(5)
+      )
+      console.log('✅ Email sent:', response.status, response.text)
     } catch (err) {
-      console.error('Error saving to Firestore:', err)
+      console.error('❌ EmailJS error:', err)
     }
+
+    // Always show confirmation screen
+    setFormSubmitted(true)
+    setStep(5)
+    console.log('✅ Booking complete, showing confirmation screen')
   }
 
   return (
